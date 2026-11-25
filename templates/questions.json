@@ -1,0 +1,25 @@
+[
+  {
+    "category": "Mathematics",
+    "en": "What is 6 × 7?",
+    "ar": "كم يساوي ٦ × ٧؟",
+    "type": "mcq",
+    "difficulty": "easy",
+    "options": [
+      {
+        "id": "a",
+        "en": "42",
+        "ar": "٤٢"
+      },
+      {
+        "id": "b",
+        "en": "48",
+        "ar": "٤٨"
+      }
+    ],
+    "correct": "a",
+    "verification": "review",
+    "status": "draft",
+    "source": "6 × 7 = 42"
+  }
+]

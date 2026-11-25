@@ -1,0 +1,162 @@
+const root=document.querySelector('#content'), head=document.querySelector('#masthead'), foot=document.querySelector('#foot');
+const defaults={siteName:'UAEGamer Trivia',defaultLanguage:'en',defaultDuration:60,defaultQuestions:5,minTeams:2,maxTeams:32,registrationOpen:true,allowSpectators:true,privateBanks:true,sound:true,animations:true};
+let settings={...defaults}, lang=localStorage.getItem('trivia:language')||'en', theme=localStorage.getItem('trivia:theme')||'dark', sdk=null,user=null,profile=null,serial=0,controller=null,cleanup=null,activeRoute='',recovery=false;
+const t=(en,ar)=>lang==='ar'?ar:en;
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const btn=(en,ar,attrs='',cl='')=>'<button type="button" class="'+cl+'" '+attrs+'>'+esc(t(en,ar))+'</button>';
+const nav=(route,en,ar,cl='')=>btn(en,ar,'data-go="'+esc(route)+'"',cl);
+const go=route=>{const h='#/'+route;if(location.hash===h)render();else location.hash=h;};
+const msg=(form,value)=>{const node=form.querySelector('[role=status]');if(node)node.textContent=value;};
+const status='<p role="status" aria-live="polite" class="feedback"></p>';
+const field=(name,label,ar,type='text',attrs='')=>'<label>'+esc(t(label,ar))+'<input name="'+name+'" type="'+type+'" '+attrs+'></label>';
+const title=(en,ar,desc='',ad='')=>'<div class="title-block"><h1>'+esc(t(en,ar))+'</h1>'+(desc?'<p class="lead">'+esc(t(desc,ad))+'</p>':'')+'</div>';
+const http=value=>{try{const url=new URL(value);return url.protocol==='https:'?url.href:'';}catch{return '';}};
+const err=e=>{const s=String(e?.message||e||'');const patterns=[[/Invalid login credentials/i,'Check your email and password.','تحقق من البريد الإلكتروني وكلمة المرور.'],[/Email not confirmed/i,'Verify your email before signing in.','فعّل بريدك الإلكتروني قبل تسجيل الدخول.'],[/rate limit|too many/i,'Too many attempts. Try again later.','محاولات كثيرة. حاول لاحقاً.'],[/fetch|network/i,'Connection interrupted. Please try again.','انقطع الاتصال. حاول مرة أخرى.']];for(const [p,en,ar] of patterns)if(p.test(s))return t(en,ar);return lang==='ar'?('تعذّر إكمال العملية. '+s):s;};
+async function rpc(name,args={}){if(!sdk)throw Error(t('Connect a staging Supabase project to use this feature.','يلزم ربط مشروع Supabase تجريبي لاستخدام هذه الميزة.'));const {data,error}=await sdk.rpc(name,args);if(error)throw error;return data;}
+function chrome(route){
+ document.documentElement.lang=lang;document.documentElement.dir=lang==='ar'?'rtl':'ltr';document.documentElement.dataset.theme=theme;
+ document.title=settings.siteName||defaults.siteName;
+ document.querySelector('.skip').textContent=t('Skip to content','الانتقال إلى المحتوى');
+ const description=settings[lang==='ar'?'descriptionAr':'description'];if(description)document.querySelector('meta[name=description]').content=description;
+ document.documentElement.classList.toggle('motion-off',settings.animations===false);
+ const brand=esc(settings.siteName||defaults.siteName);
+ const logo=http(settings.logo)||'./favicon.svg';
+ head.innerHTML='<button class="wordmark" data-go="" aria-label="'+brand+'"><img alt="" src="'+esc(logo)+'"><span>'+brand+'</span></button><nav class="nav" aria-label="'+t('Main navigation','القائمة الرئيسية')+'">'+nav('','Home','الرئيسية',route===''?'current':'')+nav('how','How to play','طريقة اللعب',route==='how'?'current':'')+(user?nav('dashboard','My tournaments','بطولاتي',route==='dashboard'?'current':''):'')+(profile?.role==='admin'?nav('admin','Administration','الإدارة'):'')+'</nav><div class="tools">'+btn(lang==='en'?'العربية':'English',lang==='ar'?'English':'العربية','data-action="lang"','quiet')+btn(theme==='dark'?'☀':'☾',theme==='dark'?'☀':'☾','data-action="theme" aria-label="'+t('Switch color theme','تغيير المظهر')+'"')+(user?nav('profile','Profile','حسابي'):nav('login','Log in','دخول','primary'))+'</div>';
+ foot.className='public-foot';foot.innerHTML='<strong>'+brand+'</strong><div>'+nav('faq','FAQ','أسئلة شائعة')+nav('contact','Contact','تواصل معنا')+nav('terms','Terms','الشروط')+nav('privacy','Privacy','الخصوصية')+'</div>';
+ document.body.classList.toggle('arena-route',/^(team|manager|watch)\//.test(route));
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-go],[data-action]');if(!b)return;
+ if(b.hasAttribute('data-go')){go(b.dataset.go);return;}
+ if(b.dataset.action==='social'){const url=http(b.dataset.url);if(url)window.open(url,'_blank','noopener,noreferrer');}
+ if(b.dataset.action==='contact'){const email=String(settings.contactEmail||'').trim();if(/^[^\s@?&#]+@[^\s@?&#]+\.[^\s@?&#]+$/.test(email))location.href='mailto:'+email;}
+ if(b.dataset.action==='theme'){theme=theme==='dark'?'light':'dark';localStorage.setItem('trivia:theme',theme);chrome(activeRoute);}
+ if(b.dataset.action==='lang'){lang=lang==='en'?'ar':'en';localStorage.setItem('trivia:language',lang);render();}
+});
+document.querySelector('.skip').onclick=e=>{e.preventDefault();root.focus();};
+function home(){
+ const portals=[['✦','Host a tournament','استضف بطولة','Set the rules, enter your teams and run the competition.','اختر القواعد وأدخل أسماء الفرق وأدر المنافسة.','create','Create game','إنشاء لعبة'],['⚑','Join your team','انضم لفريقك','Use your team invitation on the device you’ll answer with.','افتح دعوة فريقك على الجهاز الذي ستجيب منه.','join','Join game','الانضمام للعبة'],['▣','Watch the action','شاهد المنافسة','Open the live scoreboard on a phone, TV or projector.','اعرض النتائج المباشرة على الهاتف أو التلفاز أو جهاز العرض.','watch','Watch game','مشاهدة لعبة']];
+ const customTitle=settings[lang==='ar'?'homeTitleAr':'homeTitleEn'],customIntro=settings[lang==='ar'?'homeTextAr':'homeTextEn'];
+ root.innerHTML='<section class="hero"><div class="hero-copy"><h1>'+(customTitle?esc(customTitle):t('Take the <em>trivia crown.</em>','من يحصد <em>كأس التحدّي؟</em>'))+'</h1><p>'+esc(customIntro||t('Bring your teams together for a live knockout trivia tournament.','اجمع فرقك لخوض بطولة أسئلة مباشرة بنظام خروج المغلوب.'))+'</p><div class="actions">'+nav('create','Create game','إنشاء لعبة','primary')+nav('how','How to play','طريقة اللعب','outline')+'</div></div><div class="stage" aria-hidden="true"><div class="plinth"></div><div class="cup"><i class="ear one"></i><i class="ear two"></i><i class="stem"></i><i class="base"></i><i class="bowl"></i></div><i class="spark s1">✦</i><i class="spark s2">✧</i><i class="spark s3">✦</i><i class="spark s4">✦</i></div></section><section class="home-section"><h2>'+t('Enter the arena','ادخل ساحة التحدي')+'</h2><div class="portals">'+portals.map(([icon,en,ar,d,da,r,b,ba])=>'<article class="portal"><span aria-hidden="true" class="marker">'+icon+'</span><h3>'+t(en,ar)+'</h3><p>'+t(d,da)+'</p>'+nav(r,b,ba)+'</article>').join('')+'</div></section>';
+}
+function formPage(en,ar,content,desc='',ad=''){root.innerHTML='<section class="narrow">'+title(en,ar,desc,ad)+'<form class="panel stack">'+content+status+'</form></section>';return root.querySelector('form');}
+function submit(f,fn){f.onsubmit=async e=>{e.preventDefault();if(f.dataset.busy)return;f.dataset.busy='1';const b=f.querySelector('[type=submit]');if(b)b.disabled=true;msg(f,'');try{await fn(new FormData(f));}catch(error){msg(f,err(error));}finally{delete f.dataset.busy;if(b)b.disabled=false;}};}
+const save=(en,ar)=>'<button type="submit" class="primary">'+t(en,ar)+'</button>';
+function auth(route){
+ const signup=route==='register',forgot=route==='recover',reset=route==='reset';
+ if(signup&&!settings.registrationOpen){root.innerHTML=title('Registration is closed','التسجيل مغلق')+nav('login','Log in','تسجيل الدخول');return;}
+ const d=signup?['Create manager account','إنشاء حساب مدير']:forgot?['Recover your account','استعادة الحساب']:reset?['Set a new password','تعيين كلمة مرور جديدة']:['Manager login','دخول مدير اللعبة'];
+ const f=formPage(...d,(signup?field('name','Display name','الاسم الظاهر','text','required maxlength="80" autocomplete="name"'):'')+(reset?'':field('email','Email address','البريد الإلكتروني','email','required autocomplete="email"'))+(forgot?'':field('password',reset?'New password':'Password',reset?'كلمة مرور جديدة':'كلمة المرور','password','required '+(signup||reset?'minlength="8" autocomplete="new-password"':'autocomplete="current-password"')))+save(...(forgot?['Email reset link','إرسال رابط الاستعادة']:d))+'<div class="actions">'+(!signup&&!forgot&&!reset&&settings.registrationOpen?nav('register','Register','إنشاء حساب'):'')+(!forgot&&!signup&&!reset?nav('recover','Forgot password?','نسيت كلمة المرور؟'):'')+(signup||forgot?nav('login','Back to login','العودة للدخول'):'')+'</div>');
+ submit(f,async v=>{if(!sdk)throw Error(t('Account services need a configured Supabase project.','تحتاج خدمات الحساب إلى ربط مشروع Supabase.'));let result;const email=String(v.get('email')||'').trim(),password=String(v.get('password')||''),base=location.origin+location.pathname;
+ if(signup)result=await sdk.auth.signUp({email,password,options:{data:{name:v.get('name'),display_name:v.get('name')},emailRedirectTo:base}});
+ else if(forgot)result=await sdk.auth.resetPasswordForEmail(email,{redirectTo:base+'?recovery=1'});
+ else if(reset)result=await sdk.auth.updateUser({password});
+ else result=await sdk.auth.signInWithPassword({email,password});if(result.error)throw result.error;
+ if(forgot||signup&&!result.data.session){msg(f,t('Check your email for the next step.','راجع بريدك الإلكتروني لإكمال الخطوة التالية.'));return;}
+ if(reset){recovery=false;history.replaceState(null,'',base+'#/dashboard');}
+ await identity();go(sessionStorage.getItem('trivia:return')||'dashboard');sessionStorage.removeItem('trivia:return');
+ });
+}
+async function identity(){if(!sdk){user=profile=null;return;}const result=await sdk.auth.getSession();user=result.data.session?.user||null;profile=user?await rpc('trivia_profile').catch(()=>null):null;}
+function requireUser(route){
+ if(user&&profile?.status&&profile.status!=='active'&&route!=='profile'){
+ root.innerHTML='<section class="narrow">'+(profile.status==='pending'?title('Awaiting manager approval','بانتظار موافقة الإدارة','Your account is registered. You can open the dashboard once an administrator approves it.','تم تسجيل حسابك. يمكنك فتح لوحة التحكم بعد موافقة الإدارة.'):title('Account suspended','الحساب موقوف','Contact the site operator about reactivation.','تواصل مع مشغّل الموقع لإعادة التفعيل.'))+'<div class="actions">'+nav('profile','My profile','ملفي الشخصي')+nav('contact','Contact','تواصل معنا')+'</div></section>';return false;}
+ if(user)return true;sessionStorage.setItem('trivia:return',route);auth('login');return false;}
+function myProfile(){if(!requireUser('profile'))return;const f=formPage('My profile','ملفي الشخصي','<p>'+esc(user.email)+'</p>'+field('name','Display name','الاسم الظاهر','text','required maxlength="80" value="'+esc(profile?.name||user.user_metadata?.name||'')+'"')+'<p>'+t('Account status','حالة الحساب')+' · '+esc(profile?.status==='active'?t('Active','نشط'):phaseName(profile?.status||''))+'</p>'+save('Save changes','حفظ التغييرات')+'<div class="actions">'+nav('recover','Reset password','إعادة تعيين كلمة المرور')+btn('Log out','تسجيل الخروج','id="logout"','danger')+'</div>');submit(f,async v=>{profile=await rpc('trivia_profile',{p_name:String(v.get('name')).trim()});msg(f,t('Profile saved.','تم حفظ الملف الشخصي.'));});f.querySelector('#logout').onclick=async()=>{try{const {error}=await sdk.auth.signOut();if(error)throw error;draft=editing=null;user=profile=null;go('');}catch(e){msg(f,err(e));}};}
+function locate(route){const watch=route==='watch';
+ const f=formPage(watch?'Watch a game':'Join a game',watch?'شاهد لعبة':'انضم للعبة',field(watch?'code':'invite',watch?'Session code':'Private team link or session code',watch?'رمز الجلسة':'رابط الفريق الخاص أو رمز الجلسة','text','required maxlength="1024" spellcheck="false" autocapitalize="off"')+save(watch?'Open spectator screen':'Continue',watch?'فتح شاشة الجمهور':'متابعة'),watch?'Enter the code shown by the host.':'Open your team invitation to answer. A session code opens spectator access.',watch?'أدخل الرمز الذي يعرضه المضيف.':'افتح دعوة فريقك للإجابة. يتيح رمز الجلسة المشاهدة فقط.');
+ submit(f,async v=>{const raw=String(v.values().next().value).trim();if(!watch&&/^https?:/i.test(raw)){let url;try{url=new URL(raw);}catch{}const path=url?.hash.replace(/^#\/?/,'');if(url?.origin!==location.origin||!/^team\/[a-z\d_-]{3,32}\/[a-z\d-]{8,80}(\/[a-z\d_-]{8,250})?$/i.test(path||''))throw Error(t('Use a private link issued by this site.','استخدم رابط فريق خاصاً صادراً من هذا الموقع.'));go(path);return;}if(!/^[A-Z0-9-]{3,32}$/i.test(raw))throw Error(t('Enter a valid session code.','أدخل رمز جلسة صالحاً.'));go('watch/'+raw.toUpperCase());});
+}
+const phases={draft:['Draft','مسودة'],lobby:['Lobby','الانتظار'],ready:['Ready','جاهزة'],active:['In progress','قيد اللعب'],complete:['Completed','مكتملة'],completed:['Completed','مكتملة'],cancelled:['Cancelled','ملغاة'],suspended:['Suspended','موقوفة'],approved:['Approved','معتمد'],pending:['Pending approval','بانتظار الموافقة'],category:['Category selection','اختيار الفئة'],question:['Question active','السؤال نشط'],revealed:['Answer revealed','تم كشف الإجابة']};
+function phaseName(key){
+ const extra={match_ready:['Match ready','المباراة جاهزة'],card:['Question selection','اختيار السؤال'],paused:['Paused','موقوفة مؤقتاً'],locked:['Answer locked','الإجابة مثبّتة'],expired:['Time expired','انتهى الوقت'],exhausted:['More questions needed','يلزم توفير أسئلة']};
+ return (phases[key]||extra[key])?t(...(phases[key]||extra[key])):key;}
+async function dashboard(s){if(!requireUser('dashboard'))return;const sessions=await rpc('trivia_sessions');if(s!==serial)return;
+ root.innerHTML='<div class="topline">'+title('My tournaments','بطولاتي','Create a competition or resume a previous session.','أنشئ منافسة أو استأنف جلسة سابقة.')+'<div class="actions">'+(settings.privateBanks!==false?nav('banks','Question banks','بنوك الأسئلة'):'')+nav('create','Create game','إنشاء لعبة','primary')+'</div></div><section class="panel items"><h2>'+t('Sessions','الجلسات')+'</h2>'+(sessions.length?sessions.map(x=>'<article class="row session-item"><div><h3>'+esc(x.name)+'</h3><small><bdi class="code">'+esc(x.code)+'</bdi> · '+esc(phaseName(x.phase))+' · '+esc(new Date(x.created_at).toLocaleDateString(lang==='en'?'en-GB':'ar-AE'))+'</small></div>'+nav('manager/'+encodeURIComponent(x.code),'Open control room','فتح لوحة التحكم')+'</article>').join(''):'<p class="lead">'+t('Your tournaments will appear here once you create a game.','ستظهر بطولاتك هنا عند إنشاء أول لعبة.')+'</p>')+'</section>';
+}
+const palette=['#9670f5','#32beac','#e99a3b','#df6487','#6598ff','#a5bd50','#d87acf','#6ac3e1'];
+function newWizard(){return {step:0,name:'',teams:Array.from({length:Math.max(2,settings.minTeams||2)},(_,i)=>({name:'',color:palette[i%palette.length],icon:''})),rules:{format:'standard',questions:settings.defaultQuestions||5,duration:settings.defaultDuration||60,correctPoints:1,wrongPoints:0,categories:[],difficulties:[],banks:[],earlyVictory:false,thirdPlace:false,spectators:settings.allowSpectators!==false,language:lang,sound:settings.sound!==false,cards:8,shuffleOptions:true}};}
+let draft=null, editing=null;
+function wizard(catalog,edit=false){
+ const d=edit?editing:(draft||(draft=newWizard())), r=d.rules;let step=d.step;
+ const langCat=c=>lang==='ar'?(c.category_ar||c.category):c.category;
+ const diffs=[['easy','Easy','سهل'],['medium','Medium','متوسط'],['hard','Hard','صعب']];
+ const banks=[...new Map(catalog.map(c=>[c.bank_id,c])).values()],cats=[...new Map(catalog.map(c=>[c.category,c])).values()];
+ const tally=()=>catalog.filter(c=>(!r.banks.length||r.banks.includes(c.bank_id))&&(!r.categories.length||r.categories.includes(c.category))&&(!r.difficulties.length||r.difficulties.includes(c.difficulty))).reduce((a,c)=>a+Number(c.count),0);
+ const select=(name,en,ar,options)=>'<label>'+t(en,ar)+'<select name="'+name+'">'+options.map(([v,l])=>'<option value="'+esc(v)+'" '+(String(r[name])===String(v)?'selected':'')+'>'+esc(l)+'</option>').join('')+'</select></label>';
+ const numeric=(name,en,ar,min,max)=>field(name,en,ar,'number','required step="1" min="'+min+'" max="'+max+'" value="'+esc(r[name])+'"');
+ const toggle=(name,en,ar)=>'<label class="check"><input name="'+name+'" type="checkbox" '+(r[name]?'checked':'')+'>'+t(en,ar)+'</label>';
+ const multi=(name,en,ar,items)=>'<fieldset class="choice-set full"><legend>'+t(en,ar)+'</legend><div class="chipset">'+items.map(([v,l])=>'<label class="check"><input type="checkbox" name="'+name+'" value="'+esc(v)+'" '+(r[name].includes(v)?'checked':'')+'>'+esc(l)+'</label>').join('')+'</div></fieldset>';
+ const required=2*r.questions*(d.teams.length-1+Number(r.thirdPlace&&d.teams.length>=4)),reserve=Math.ceil(required*1.3);
+ const teamLines=d.teams.map((a,i)=>'<div class="team-line"><input aria-label="'+t('Team color','لون الفريق')+' '+(i+1)+'" data-team="'+i+'" data-field="color" type="color" value="'+esc(a.color)+'"><input aria-label="'+t('Team name','اسم الفريق')+' '+(i+1)+'" data-team="'+i+'" data-field="name" required maxlength="60" placeholder="'+t('Team','الفريق')+' '+(i+1)+'" value="'+esc(a.name)+'">'+btn('Remove','حذف','data-remove="'+i+'" '+(d.teams.length<=settings.minTeams?'disabled':''),'danger')+'</div>').join('');
+ const stage0=field('title','Tournament name','اسم البطولة','text','required maxlength="90" value="'+esc(d.name)+'"')+'<h3>'+t('Teams','الفرق')+' ('+d.teams.length+')</h3><div class="items">'+teamLines+'</div>'+btn('Add team','إضافة فريق','id="add-team" '+(d.teams.length>=settings.maxTeams?'disabled':''));
+ const stage1='<div class="form-grid">'+select('format','Knockout format','نظام خروج المغلوب',[['standard',t('Standard bracket','الجدول الثابت')],['round',t('Random pairs each round','قرعة لكل جولة')]])+select('language','Question language','لغة الأسئلة',[['en','English'],['ar','العربية']])+numeric('questions','Questions per team','أسئلة كل فريق',settings.minQuestions||1,settings.maxQuestions||20)+numeric('duration','Seconds per question','ثواني كل سؤال',settings.minDuration||5,settings.maxDuration||300)+numeric('correctPoints','Points for a correct answer','نقاط الإجابة الصحيحة',1,10)+numeric('wrongPoints','Points for an incorrect answer','نقاط الإجابة الخاطئة',-10,0)+numeric('cards','Mystery cards per draw','بطاقات السؤال في كل سحب',1,20)+'</div><div class="form-grid">'+toggle('earlyVictory','Allow early victory','السماح بالفوز المبكر')+toggle('thirdPlace','Third-place match','مباراة المركز الثالث')+(settings.allowSpectators!==false?toggle('spectators','Allow spectators','السماح بالمشاهدين'):'')+toggle('shuffleOptions','Randomize answer order','خلط ترتيب الخيارات')+toggle('sound','Sound effects','مؤثرات صوتية')+'</div><p class="lead">'+t('Leave a group unchecked to include all available choices.','اترك المجموعة دون تحديد لتشمل جميع الخيارات المتاحة.')+'</p>'+multi('banks','Question banks','بنوك الأسئلة',banks.map(c=>[c.bank_id,c.bank]))+multi('categories','Categories','الفئات',cats.map(c=>[c.category,langCat(c)]))+multi('difficulties','Difficulty','الصعوبة',diffs.map(([v,e,a])=>[v,t(e,a)]));
+ const stage2='<h2>'+esc(d.name)+'</h2><p>'+d.teams.map(a=>esc(a.name)).join(t(' · ','، '))+'</p><div class="panel"><h3>'+t('Question capacity','رصيد الأسئلة')+'</h3><p>'+t('Available after filters','المتاح بعد تطبيق التصفية')+' <strong>'+tally()+'</strong></p><p>'+t('Regular play requires','الحد الأدنى للعب الأساسي')+' <strong>'+required+'</strong> · '+t('Recommended with reserve','الموصى به مع الاحتياطي')+' <strong>'+reserve+'</strong></p><p class="muted">'+(tally()<required?t('Add questions, broaden the filters or reduce the questions per team.','أضف أسئلة أو وسّع الاختيارات أو قلّل عدد أسئلة كل فريق.'):tally()<reserve?t('The reserve is below 30%. Skips and sudden death may exhaust the bank.','الاحتياطي أقل من ٣٠٪. قد ينفد الرصيد عند التخطي أو كسر التعادل.'):t('Sudden death has no fixed question limit. Overlapping banks can reduce the unique count at start.','لا يوجد حد ثابت لأسئلة كسر التعادل. قد يقل العدد الفريد عند البدء إذا تكررت الأسئلة بين البنوك.'))+'</p></div><p>'+t('Format','النظام')+' · '+(r.format==='standard'?t('Standard bracket','جدول ثابت'):t('Random pairs','قرعة كل جولة'))+' · '+r.questions+' '+t('questions per team','أسئلة لكل فريق')+' · '+r.duration+' '+t('seconds','ثانية')+'</p>';
+ root.innerHTML='<section class="wide">'+(edit?title('Edit tournament settings','تعديل إعدادات البطولة'):title('Create tournament','إنشاء بطولة'))+'<ol class="stepper">'+[['Teams','الفرق'],['Rules & bank','القواعد والأسئلة'],['Review','مراجعة']].map(([e,a],i)=>'<li '+(i===step?'class="active" aria-current="step"':'')+'>'+(i+1)+'. '+t(e,a)+'</li>').join('')+'</ol><form class="panel stack">'+(edit&&step===0?field('title','Tournament name','اسم البطولة','text','required maxlength="90" value="'+esc(d.name)+'"')+'<p>'+d.teams.map(a=>esc(a.name)).join(' · ')+'</p>':[stage0,stage1,stage2][step])+'<div class="actions">'+(step?btn('Back','السابق','id="back"'):nav(edit?'manager/'+d.code:'dashboard','Cancel','إلغاء'))+save(step===2?(edit?'Save settings':'Create tournament'):'Continue',step===2?(edit?'حفظ الإعدادات':'إنشاء البطولة'):'متابعة')+'</div>'+status+'</form></section>';
+ const f=root.querySelector('form');
+ if(step===0){f.oninput=e=>{const el=e.target;if(el.name==='title')d.name=el.value;else if(el.dataset.team!==undefined)d.teams[+el.dataset.team][el.dataset.field]=el.value;};
+ if(!edit)f.querySelector('#add-team').onclick=()=>{if(d.teams.length<settings.maxTeams)d.teams.push({name:'',color:palette[d.teams.length%palette.length],icon:''});wizard(catalog,edit);root.querySelectorAll('[data-field=name]')[d.teams.length-1]?.focus();};
+ f.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{if(d.teams.length>settings.minTeams)d.teams.splice(+b.dataset.remove,1);wizard(catalog,edit);});}
+ function readRules(){if(step!==1)return;const v=new FormData(f);for(const n of ['format','language'])r[n]=v.get(n);for(const n of ['questions','duration','correctPoints','wrongPoints','cards'])r[n]=Number(v.get(n));for(const n of ['earlyVictory','thirdPlace','spectators','shuffleOptions','sound'])r[n]=v.has(n);for(const n of ['categories','difficulties','banks'])r[n]=v.getAll(n);}
+ f.onchange=e=>{if(step===1)readRules();};if(step)f.querySelector('#back').onclick=()=>{readRules();d.step--;wizard(catalog,edit);};
+ submit(f,async()=>{if(step===0){if(!d.name.trim()||d.teams.some(a=>!a.name.trim()))throw Error(t('Enter a tournament name and a name for every team.','أدخل اسماً للبطولة ولكل فريق.'));if(new Set(d.teams.map(a=>a.name.trim().toLocaleLowerCase())).size!==d.teams.length)throw Error(t('Use distinct team names.','استخدم اسماً مختلفاً لكل فريق.'));}
+ if(step===1){readRules();if(r.thirdPlace&&d.teams.length<4)throw Error(t('Third-place play requires four or more teams.','تحتاج مباراة المركز الثالث إلى أربعة فرق على الأقل.'));}
+ if(step<2){d.step++;wizard(catalog,edit);return;}
+ if(edit){await rpc('trivia_configure',{p_code:d.code,p_version:d.version,p_name:d.name.trim(),p_settings:r});editing=null;go('manager/'+d.code);return;}
+ const result=await rpc('trivia_create',{p_name:d.name.trim(),p_teams:d.teams.map(a=>({...a,name:a.name.trim()})),p_settings:r});draft=null;go('manager/'+result.code);});
+}
+function info(route){
+ const data={
+ how:['How to play','طريقة اللعب',[
+ ['Create the bracket','أنشئ جدول البطولة','A manager names the teams, chooses question categories and starts the tournament. Each team opens its private invitation on one answering device.','يسمّي المدير الفرق ويحدّد فئات الأسئلة ويبدأ البطولة. يفتح كل فريق دعوته الخاصة على جهاز إجابة واحد.'],
+ ['Choose and lock','اختر وثبّت','On your turn, choose a category and mystery card. Select an answer, then lock it before time runs out. An unlocked selection earns no credit.','في دورك اختر فئة وبطاقة سؤال، ثم اختر إجابتك وثبّتها قبل انتهاء الوقت. لا تُحتسب الإجابة غير المثبتة.'],
+ ['Reveal and advance','اكشف الإجابة وتقدّم','The manager reveals the answer and advances the turn. The highest score wins the match. A tie goes to paired sudden-death questions.','يكشف المدير الإجابة وينقل الدور. يفوز صاحب أعلى نتيجة، وعند التعادل يجيب كل فريق عن سؤال إضافي في كل دورة.'],
+ ['Follow the final','تابع النهائي','Open the spectator screen on a TV to follow the bracket, scores and championship.','اعرض واجهة الجمهور على التلفاز لمتابعة الجدول والنتائج والمباراة النهائية.']]],
+ faq:['Frequently asked questions','الأسئلة الشائعة',[
+ ['Do players need accounts?','هل يحتاج اللاعبون إلى حسابات؟','Only managers need a registered account. Teams use invitations and spectators use a session code.','يحتاج مدير اللعبة فقط إلى حساب. تنضم الفرق بالدعوات ويدخل المشاهدون برمز الجلسة.'],
+ ['Can we change a locked answer?','هل يمكن تعديل إجابة مثبتة؟','You can change your selection until you lock it. The server records the lock and checks the deadline.','يمكن تعديل الاختيار إلى حين تثبيته. يسجّل الخادم التثبيت ويتحقق من المهلة الزمنية.'],
+ ['What happens with an odd number of teams?','ماذا يحدث إذا كان عدد الفرق فردياً؟','The tournament engine assigns the necessary byes. In round-based play, it favors teams with fewer previous byes.','يخصّص النظام تأهلاً تلقائياً عند الحاجة. وفي نظام القرعة لكل جولة يُفضّل الفرق الأقل حصولاً على تأهل تلقائي سابقاً.'],
+ ['What if our device disconnects?','ماذا لو انقطع الاتصال؟','Reopen the team screen on the same browser. Ask the manager for device replacement if you have moved to another device.','أعد فتح شاشة الفريق على المتصفح نفسه. اطلب من المدير استبدال جهاز الإجابة عند الانتقال إلى جهاز آخر.']]],
+ terms:['Terms of use','شروط الاستخدام',[
+ ['Hosting a game','استضافة لعبة','Managers are responsible for the questions and media they upload and for obtaining permission to use them at their event. Keep team invitations private and respect the other participants.','يتحمّل مدير اللعبة مسؤولية الأسئلة والوسائط التي يرفعها والحصول على إذن لاستخدامها في الفعالية. احتفظ بسرية الدعوات واحترم المشاركين.']]],
+ privacy:['Privacy notice','إشعار الخصوصية',[
+ ['Game and account data','بيانات اللعبة والحساب','The platform stores manager account details, team names, answers, scores and activity records to operate tournaments. Spectator screens display team names, results and revealed answers. Use a team nickname where appropriate.','تحفظ المنصة بيانات حساب المدير وأسماء الفرق والإجابات والنتائج وسجلات النشاط لتشغيل البطولات. تعرض شاشة الجمهور أسماء الفرق والنتائج والإجابات المكشوفة. يمكن اختيار اسم مستعار للفريق.']]],
+ contact:['Contact','تواصل معنا',[]]};
+ const social=String(settings.socialLinks||'').split(/[\s,]+/).map(http).filter(Boolean).slice(0,12);
+ const contactButtons='<div class="actions">'+(settings.contactEmail?btn('Email the operator','إرسال بريد','data-action="contact"'):'')+social.map(url=>btn(new URL(url).hostname,new URL(url).hostname,'data-action="social" data-url="'+esc(url)+'"')).join('')+'</div>';
+ const [en,ar,rows]=data[route];const key=route+(lang==='ar'?'Ar':'En');const override=['terms','privacy'].includes(route)?settings[key]:null;
+ root.innerHTML='<section class="wide">'+title(en,ar)+'<div class="panel prose">'+(override?'<p style="white-space:pre-wrap">'+esc(override)+'</p>':rows.map(([e,a,d,b])=>route==='faq'?'<details><summary>'+t(e,a)+'</summary><p>'+t(d,b)+'</p></details>':'<section class="stack"><h2>'+t(e,a)+'</h2><p>'+t(d,b)+'</p></section>').join(''))+(route==='contact'?'<p>'+t('For tournament access, contact your event manager. For account or platform enquiries, use the operator’s contact address.','للوصول إلى البطولة، تواصل مع مدير الفعالية. وللاستفسارات المتعلقة بالحساب أو المنصة، استخدم عنوان مشغّل الموقع.')+'</p><p>'+esc(settings.contactEmail||t('The operator has not listed a contact address.','لم يُضف مشغّل الموقع عنواناً للتواصل.'))+'</p>'+contactButtons:'')+(route==='how'?'<div class="actions">'+nav('create','Create game','إنشاء لعبة','primary')+nav('join','Join game','الانضمام للعبة')+'</div>':'')+'</div></section>';
+}
+async function render(){
+ const id=++serial;controller?.abort();controller=new AbortController();if(typeof cleanup==='function')cleanup();cleanup=null;
+ const route=recovery?'reset':location.hash.replace(/^#\/?/,'').replace(/\/$/,'');activeRoute=route;chrome(route);root.replaceChildren();
+ const ctx={root,lang,t,rpc,sdk,user,profile,go,signal:controller.signal,settings};
+ try{
+ if(settings.maintenance&&profile?.role!=='admin'&&!['login','profile','recover','reset'].includes(route)){root.innerHTML=title('Maintenance in progress','صيانة الموقع')+'<p>'+esc(settings.maintenanceMessage||t('Please check back after maintenance.','يرجى العودة بعد انتهاء الصيانة.'))+'</p>'+nav('login','Manager login','دخول المدير');return;}
+ if(route==='')home();else if(['how','faq','terms','privacy','contact'].includes(route))info(route);
+ else if(['register','login','recover','reset'].includes(route))auth(route);else if(route==='profile')myProfile();
+ else if(route==='watch'||route==='join')locate(route);else if(route==='dashboard')await dashboard(id);
+ else if(route==='create'){if(!requireUser(route))return;const c=await rpc('trivia_catalog');if(id===serial)wizard(c||[]);}
+ else if(/^configure\/[a-z\d-]+$/i.test(route)){if(!requireUser(route))return;const code=route.split('/')[1];const [state,catalog]=await Promise.all([rpc('trivia_state',{p_code:code,p_device:null}),rpc('trivia_catalog')]);if(id!==serial)return;
+ if(!state.manager||state.phase!=='lobby')throw Error(t('Only the manager can edit a tournament in the lobby.','يمكن للمدير فقط تعديل البطولة في الردهة.'));
+ if(!editing||editing.code!==code||editing.version!==state.version)editing={code,version:state.version,name:state.name,teams:state.teams,step:0,rules:{...newWizard().rules,...state.settings}};
+ wizard(catalog||[],true);}
+ else if(route==='admin'||route==='banks'){if(!requireUser(route))return;const {mountAdmin}=await import('./admin.js');if(id===serial){const fn=await mountAdmin(ctx,route);if(id===serial)cleanup=fn;else if(typeof fn==='function')fn();}}
+ else if(/^(watch|team|manager)\//.test(route)){if(route.startsWith('manager/')&&!requireUser(route))return;const {mountArena}=await import('./arena.js');if(id===serial){const fn=await mountArena(ctx,route);if(id===serial)cleanup=fn;else if(typeof fn==='function')fn();}}
+ else root.innerHTML=title('Page unavailable','الصفحة غير متاحة')+nav('','Go home','الرئيسية');
+ }catch(e){if(id!==serial)return;root.innerHTML='<section class="narrow">'+title('Unable to open this page','تعذّر فتح الصفحة')+'<p class="feedback" role="alert">'+esc(err(e))+'</p><div class="actions">'+btn('Retry','إعادة المحاولة','id="retry"')+nav('','Home','الرئيسية')+'</div></section>';root.querySelector('#retry').onclick=render;}
+}
+async function boot(){
+ const config=window.TRIVIA_CONFIG||{};
+ recovery=new URLSearchParams(location.search).get('recovery')==='1'||new URLSearchParams(location.hash.slice(1)).get('type')==='recovery';
+ if(config.url&&config.key&&window.supabase){sdk=window.supabase.createClient(config.url,config.key);
+ sdk.auth.onAuthStateChange(event=>{if(event==='PASSWORD_RECOVERY'){recovery=true;setTimeout(render,0);}if(event==='SIGNED_OUT'){draft=editing=null;user=profile=null;setTimeout(render,0);}if(event==='SIGNED_IN'){setTimeout(async()=>{const previous=user?.id;await identity();if(user?.id!==previous)render();},0);}});
+ const [site]=await Promise.allSettled([rpc('trivia_site'),identity()]);if(site.status==='fulfilled'&&site.value)settings={...defaults,...site.value};}
+ if(!localStorage.getItem('trivia:language'))lang=settings.defaultLanguage==='ar'?'ar':'en';
+ if(!localStorage.getItem('trivia:theme'))theme=settings.theme==='light'||settings.theme==='system'&&matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';
+ if(/^#[\da-f]{6}$/i.test(settings.primaryColor||''))document.documentElement.style.setProperty('--primary',settings.primaryColor);
+ if(settings.description)document.querySelector('meta[name=description]').content=settings.description;
+ if(http(settings.favicon))document.querySelector('link[rel=icon]').href=settings.favicon;
+ if(settings.fontFamily&&/^[A-Za-z ,'-]{2,80}$/.test(settings.fontFamily))document.documentElement.style.fontFamily=settings.fontFamily;
+ await render();
+}
+window.addEventListener('hashchange',()=>{render();window.scrollTo(0,0);});boot().catch(e=>{root.textContent=err(e);});
